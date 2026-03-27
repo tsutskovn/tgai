@@ -1,0 +1,5 @@
+telethon>=1.36.0
+anthropic>=0.25.0
+questionary>=2.0.0
+prompt_toolkit>=3.0.0
+python-dateutil>=2.8.0
