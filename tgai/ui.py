@@ -588,11 +588,15 @@ def select_chat_interactive(
             q = cat.lower()
             matches = [d for d in _base(actual_dialogs) if q in _dialog_display_name(d).lower()]
             if matches:
-                return chat_list_viewer(
-                    matches, title=f'Поиск: {cat}',
-                    dialogs_holder=dialogs_holder, app_holder=app_holder,
-                    preview_fn=preview_fn,
-                )
+                while True:
+                    chosen = chat_list_viewer(
+                        matches, title=f'Поиск: {cat}',
+                        dialogs_holder=dialogs_holder, app_holder=app_holder,
+                        preview_fn=preview_fn,
+                    )
+                    if chosen is None: break
+                    if open_fn is not None: open_fn(chosen)
+                    else: return chosen
             continue
 
         if cat == "folders":
@@ -619,11 +623,15 @@ def select_chat_interactive(
                 q = selected_folder.lower()
                 matches = [d for d in _base(actual_dialogs) if q in _dialog_display_name(d).lower()]
                 if matches:
-                    return chat_list_viewer(
-                        matches, title=f'Поиск: {selected_folder}',
-                        dialogs_holder=dialogs_holder, app_holder=app_holder,
-                        preview_fn=preview_fn,
-                    )
+                    while True:
+                        chosen = chat_list_viewer(
+                            matches, title=f'Поиск: {selected_folder}',
+                            dialogs_holder=dialogs_holder, app_holder=app_holder,
+                            preview_fn=preview_fn,
+                        )
+                        if chosen is None: break
+                        if open_fn is not None: open_fn(chosen)
+                        else: return chosen
                 continue
             folder_peer_ids: set[int] = set()
             for peer in (
@@ -647,13 +655,17 @@ def select_chat_interactive(
                 def __getitem__(self, idx): return _folder_holder_gen()
                 def __bool__(self): return True
 
-            return chat_list_viewer(
-                folder_dialogs,
-                title=f'Папка: {_folder_name(selected_folder)}',
-                dialogs_holder=_FolderHolder(),
-                app_holder=app_holder,
-                preview_fn=preview_fn,
-            )
+            while True:
+                chosen = chat_list_viewer(
+                    folder_dialogs,
+                    title=f'Папка: {_folder_name(selected_folder)}',
+                    dialogs_holder=_FolderHolder(),
+                    app_holder=app_holder,
+                    preview_fn=preview_fn,
+                )
+                if chosen is None: break
+                if open_fn is not None: open_fn(chosen)
+                else: return chosen
 
         # Sub-filter (all / unread)
         while True:
@@ -670,11 +682,15 @@ def select_chat_interactive(
                 q = sub.lower()
                 matches = [d for d in _base(actual_dialogs) if q in _dialog_display_name(d).lower()]
                 if matches:
-                    return chat_list_viewer(
-                        matches, title=f'Поиск: {sub}',
-                        dialogs_holder=dialogs_holder, app_holder=app_holder,
-                        preview_fn=preview_fn,
-                    )
+                    while True:
+                        chosen = chat_list_viewer(
+                            matches, title=f'Поиск: {sub}',
+                            dialogs_holder=dialogs_holder, app_holder=app_holder,
+                            preview_fn=preview_fn,
+                        )
+                        if chosen is None: break
+                        if open_fn is not None: open_fn(chosen)
+                        else: return chosen
                 continue
 
             # Build filtered dialogs_holder for this category+sub
