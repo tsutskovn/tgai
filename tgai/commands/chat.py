@@ -907,7 +907,7 @@ async def _run_chat_fullscreen(
 
     @kb.add("tab", eager=True)
     def _(e):
-        if not ai_available:
+        if not ai_available or _ai_state.get("processing_tab"):
             return
         
         if _ai_state["showing"]:
@@ -933,6 +933,8 @@ async def _run_chat_fullscreen(
         # Start async loading indicator
         input_buf.text = "Думаю..."
         _invalidate()
+
+        _ai_state["processing_tab"] = True
 
         def _worker():
             try:
@@ -961,6 +963,7 @@ async def _run_chat_fullscreen(
                 
                 def _done():
                     _ai_state["showing"] = True
+                    _ai_state["processing_tab"] = False
                     input_buf.text = res
                     input_buf.cursor_position = len(res)
                     _invalidate()
@@ -968,6 +971,7 @@ async def _run_chat_fullscreen(
                 loop.call_soon_threadsafe(_done)
             except Exception:
                 def _fail():
+                    _ai_state["processing_tab"] = False
                     input_buf.text = current
                     _invalidate()
                 loop.call_soon_threadsafe(_fail)
@@ -1216,6 +1220,11 @@ def run(args: Any, config: dict, storage: Any) -> None:
                     entity = dialog.entity
                     await _run_chat(tg, claude, storage, entity, persona, text_mode)
         finally:
+            fetch_task.cancel()
+            try:
+                await fetch_task
+            except asyncio.CancelledError:
+                pass
             await tg.stop()
 
 

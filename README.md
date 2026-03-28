@@ -15,6 +15,7 @@ The project is optimized for daily personal use:
 - Full-screen chat mode with scrolling, polling for new messages, and AI draft suggestions
 - Digest mode for unread or time-windowed messages across chats and channels
 - Live digest updates while the digest viewer is open
+- Multimodal image analysis: automated Vision & OCR descriptions for photos
 - Listen mode for assisted or automatic replies
 - Personas for different reply styles
 - Local summary cache, digest watermarks, and instant reopen of the last digest
@@ -103,7 +104,7 @@ What chat mode includes:
 - real-time polling for new messages
 - AI reply suggestions
 - draft improvement via `Tab`
-- AI suggestion reformulation via `п`
+- AI suggestion reformulation via `Ctrl+R`
 - background history loading while scrolling upward
 
 ### `tgai aggregate`

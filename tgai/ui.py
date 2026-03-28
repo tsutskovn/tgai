@@ -999,7 +999,7 @@ def format_messages(messages: list[Any], me_id: int, show_usernames: bool = Fals
             lines.append(f"[{sender_label}  {time_str}]")
             last_header = header_key
 
-        for wrapped in _word_wrap(msg.text, max_w):
+        for wrapped in _word_wrap(text, max_w):
             lines.append(wrapped)
 
     return lines
