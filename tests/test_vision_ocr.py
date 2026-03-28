@@ -63,15 +63,16 @@ class TestVisionOCR:
         assert client.clean_ocr_text("") == ""
         assert client.clean_ocr_text("a") == "" # too short
 
-    # 5. Тест форматирования [media] заглушки в UI
+    # 5. Тест форматирования [медиа] заглушки в UI
     def test_ui_media_placeholder(self):
         me_id = 123
         msg = SimpleNamespace(
             id=1, sender_id=456, text=None, photo=True, date=datetime.now()
         )
         # format_messages expects a list, newest first (reversed internally)
-        lines = format_messages([msg], me_id)
-        assert any("[media]" in line for line in lines)
+        # Now returns tuple (lines, mapping)
+        lines, _ = format_messages([msg], me_id)
+        assert any("[медиа]" in line for line in lines)
 
     # 6. Тест фильтрации по времени (логика из chat.py)
     def test_media_time_filtering_logic(self):

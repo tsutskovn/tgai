@@ -521,7 +521,26 @@ async def _menu_chat(tg, claude, storage, persona, text_mode, listen_collector=N
 
     # Interactive mode: select_chat_interactive handles the full loop
     dialogs_holder = [dialogs]
+    folders_holder = [None]
     app_holder = []
+    
+    async def _fetch():
+        async def fetch_dialogs():
+            try:
+                dialogs_holder[0] = await tg.get_dialogs(limit=50)
+                if app_holder: app_holder[0].invalidate()
+            except Exception: pass
+        async def fetch_folders():
+            try:
+                fh_res = await tg.get_folders()
+                folders_holder[0] = fh_res if fh_res is not None else []
+                if app_holder: app_holder[0].invalidate()
+            except Exception:
+                folders_holder[0] = []
+        await asyncio.gather(fetch_dialogs(), fetch_folders())
+        
+    _fetch_task = asyncio.create_task(_fetch())
+
     _poll_task = asyncio.create_task(
         _poll_chat_list(tg, dialogs_holder, app_holder)
     )
@@ -529,8 +548,9 @@ async def _menu_chat(tg, claude, storage, persona, text_mode, listen_collector=N
         await loop.run_in_executor(
             None,
             lambda: select_chat_interactive(
-                dialogs, folders,
+                dialogs_holder[0], folders_holder[0] if folders_holder[0] is not None else [],
                 dialogs_holder=dialogs_holder,
+                folders_holder=folders_holder,
                 app_holder=app_holder,
                 preview_fn=_preview_fn,
                 open_fn=_open_fn,
@@ -538,6 +558,7 @@ async def _menu_chat(tg, claude, storage, persona, text_mode, listen_collector=N
         )
     finally:
         _poll_task.cancel()
+        _fetch_task.cancel()
         try:
             await _poll_task
         except asyncio.CancelledError:

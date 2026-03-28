@@ -120,7 +120,7 @@ def smart_select(choices: list, title: str = ""):
             state['typed'] += ch
 
     app = Application(
-        layout=Layout(Window(FormattedTextControl(render, focusable=True))),
+        layout=Layout(Window(FormattedTextControl(render))),
         key_bindings=kb,
         full_screen=True,
     )
@@ -492,7 +492,7 @@ def chat_list_viewer(
             state['idx'] = 0
 
     app = Application(
-        layout=Layout(Window(FormattedTextControl(render, focusable=True))),
+        layout=Layout(Window(FormattedTextControl(render))),
         key_bindings=kb,
         full_screen=True,
     )
@@ -522,6 +522,7 @@ def select_chat_interactive(
     dialogs: list[Any],
     folders: list[Any],
     dialogs_holder: list = None,
+    folders_holder: list = None,
     app_holder: list = None,
     preview_fn=None,
     open_fn=None,
@@ -565,7 +566,7 @@ def select_chat_interactive(
     while True:
         # Determine actual sources
         actual_dialogs = dialogs_holder[0] if dialogs_holder else dialogs
-        actual_folders = folders # folders is folders_holder[0] from chat.py
+        actual_folders = folders_holder[0] if folders_holder else folders
         
         cat_choices = [
             _C("Все чаты", "all"),
@@ -573,7 +574,8 @@ def select_chat_interactive(
             _C("Группы", "groups"),
             _C("Каналы", "channels"),
         ]
-        if actual_folders:
+        # Show folders button if they are loading (None) or loaded and not empty
+        if actual_folders is None or actual_folders:
             cat_choices.append(_C("Папки", "folders"))
 
         result = smart_select(cat_choices, title="Чат — выберите категорию:")
@@ -594,6 +596,20 @@ def select_chat_interactive(
             continue
 
         if cat == "folders":
+            # Wait a bit if folders are still loading (None)
+            import time
+            wait_count = 0
+            while (folders_holder and folders_holder[0] is None) and wait_count < 10:
+                print("Ожидание загрузки папок...")
+                time.sleep(0.5)
+                wait_count += 1
+                
+            actual_folders = folders_holder[0] if folders_holder else folders
+            if not actual_folders:
+                print("Папки не найдены.")
+                time.sleep(1)
+                continue
+
             folder_choices = [_C(_folder_name(f), f) for f in actual_folders]
             fr = smart_select(folder_choices, title="Выберите папку:")
             if fr is None:
@@ -816,7 +832,7 @@ def action_menu_interactive(proposed: str, provider_name: str = "ИИ") -> tuple
         e.app.exit()
 
     app = Application(
-        layout=Layout(Window(FormattedTextControl(render, focusable=True))),
+        layout=Layout(Window(FormattedTextControl(render))),
         key_bindings=kb,
         full_screen=False,
     )
@@ -936,6 +952,10 @@ def reformulate_flow(
 
 def _word_wrap(text: str, width: int) -> list[str]:
     """Wrap text at word boundaries."""
+    import re
+    def _vlen(s: str) -> int:
+        return len(re.sub(r'\033\[[0-9;]*m', '', s))
+
     if width < 10:
         width = 60
     result: list[str] = []
@@ -946,14 +966,16 @@ def _word_wrap(text: str, width: int) -> list[str]:
         words = raw_line.split(" ")
         cur = ""
         for w in words:
-            if cur and len(cur) + 1 + len(w) > width:
+            if cur and (_vlen(cur) + 1 + _vlen(w)) > width:
                 result.append(cur)
                 cur = w
             elif cur:
                 cur += " " + w
             else:
                 cur = w
-            while len(cur) > width:
+            while _vlen(cur) > width:
+                # Truncate the visible part, keep the ANSI codes intact if possible.
+                # For simplicity in this app, we just slice the string directly if it's a huge word.
                 result.append(cur[:width])
                 cur = cur[width:]
         if cur:
@@ -961,48 +983,49 @@ def _word_wrap(text: str, width: int) -> list[str]:
     return result
 
 
-def format_messages(messages: list[Any], me_id: int, show_usernames: bool = False) -> list[str]:
-    """Format messages into lines for display. Returns list of strings."""
+def format_messages(messages, me_id, show_usernames=False):
     from tgai.telegram import _entity_short_name_with_mode
-
+    import shutil
+    from datetime import timedelta
     cols = shutil.get_terminal_size((80, 24)).columns
     reversed_msgs = list(reversed(messages))
     last_header = None
-    lines: list[str] = []
+    lines = []
+    line_to_msg = []
     max_w = cols - 2
-
     for msg in reversed_msgs:
-        # Check if message has text or photo
-        text = getattr(msg, "text", "") or ""
-        has_photo = hasattr(msg, "photo") and msg.photo
+        text = getattr(msg, "text", "") or getattr(msg, "message", "") or ""
+        # Ultra-robust media detection without class imports
+        has_media = False
+        if hasattr(msg, "photo") and msg.photo: 
+            has_media = True
+        elif hasattr(msg, "media") and msg.media:
+            has_media = True
         
-        if not text and not has_photo:
-            continue
-            
-        if not text and has_photo:
-            text = "[media]"
-
+        if not text and not has_media: continue
+        
+        if not text and has_media: text = "[32m[медиа][0m"
+        elif has_media:
+            text = text.replace("[media]", "[32m[медиа][0m").replace("[медиа]", "[32m[медиа][0m").replace("[текст]", "[36m[текст][0m")
+        
         sender_id = getattr(msg, "sender_id", None)
-        if sender_id == me_id:
-            sender_label = "Вы"
-        else:
-            sender = getattr(msg, "sender", None)
-            sender_label = _entity_short_name_with_mode(sender, show_username=show_usernames) if sender else "?"
-
-        time_str = _fmt_date(getattr(msg, "date", None))
-
-        header_key = (sender_label, time_str)
-
-        if header_key != last_header:
+        sender_label = "Вы" if sender_id == me_id else (_entity_short_name_with_mode(getattr(msg, "sender", None), show_username=show_usernames) if getattr(msg, "sender", None) else "?")
+        msg_date = getattr(msg, "date", None)
+        time_str = _fmt_date(msg_date)
+        should_show_header = True
+        if last_header:
+            l_lab, l_time = last_header
+            if sender_label == l_lab and msg_date and l_time:
+                if abs((msg_date - l_time).total_seconds()) < 15 * 60: should_show_header = False
+        if should_show_header:
             if last_header is not None:
-                lines.append("")
-            lines.append(f"[{sender_label}  {time_str}]")
-            last_header = header_key
-
-        for wrapped in _word_wrap(text, max_w):
-            lines.append(wrapped)
-
-    return lines
+                lines.append(""); line_to_msg.append(None)
+            lines.append(f"[{sender_label}  {time_str}]"); line_to_msg.append(None)
+            last_header = (sender_label, msg_date)
+        wrapped = _word_wrap(text, max_w)
+        for w_line in wrapped:
+            lines.append(w_line); line_to_msg.append(msg)
+    return lines, line_to_msg
 
 
 def display_messages(messages: list[Any], me_id: int, show_usernames: bool = False) -> None:
@@ -1158,15 +1181,15 @@ def digest_viewer(sections: list[dict], refresh_after_secs: int = 0, app_holder:
                 body_lines.append((style, f'{prefix}{name}{tag}{unread_tag}'))
                 summary_style = 'ansicyan' if selected else ''
                 for line in _summary_lines(sec.get('summary', '')):
-                    truncated = line[:max_w] + '…' if len(line) > max_w else line
-                    body_lines.append((summary_style, f'    {truncated}'))
+                    for wrapped in _word_wrap(line, max_w):
+                        body_lines.append((summary_style, f'    {wrapped}'))
                 body_lines.append(('', ''))
             else:
                 if selected:
                     body_lines.append(('bold ansicyan', f'❯ {name}{tag}{unread_tag}'))
                     for line in _summary_lines(sec.get('summary', ''), 4):
-                        truncated = line[:max_w] + '…' if len(line) > max_w else line
-                        body_lines.append(('ansicyan', f'    {truncated}'))
+                        for wrapped in _word_wrap(line, max_w):
+                            body_lines.append(('ansicyan', f'    {wrapped}'))
                     body_lines.append(('', ''))
                 else:
                     body_lines.append(('', f'  {name}{tag}{unread_tag}'))
@@ -1180,7 +1203,9 @@ def digest_viewer(sections: list[dict], refresh_after_secs: int = 0, app_holder:
             if i == state['idx']:
                 return line_idx
             if expanded:
-                line_idx += 2 + len(_summary_lines(sections[i].get('summary', '')))
+                line_idx += 2
+                for line in _summary_lines(sections[i].get('summary', '')):
+                    line_idx += len(_word_wrap(line, max(40, shutil.get_terminal_size((80, 24)).columns - 8)))
             else:
                 line_idx += 1
         return 0
@@ -1261,7 +1286,7 @@ def digest_viewer(sections: list[dict], refresh_after_secs: int = 0, app_holder:
         _close_viewer(e)
 
     app = Application(
-        layout=Layout(Window(FormattedTextControl(render, focusable=True))),
+        layout=Layout(Window(FormattedTextControl(render))),
         key_bindings=kb,
         full_screen=True,
     )

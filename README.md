@@ -105,6 +105,7 @@ What chat mode includes:
 - AI reply suggestions
 - draft improvement via `Tab`
 - AI suggestion reformulation via `Ctrl+R`
+- media actions (macOS): `Ctrl+V` глянуть, `Ctrl+C` копировать, `Ctrl+P` вставить из буфера
 - background history loading while scrolling upward
 
 ### `tgai aggregate`
