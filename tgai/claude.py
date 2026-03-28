@@ -412,6 +412,20 @@ class LLMClient:
             max_tokens=512,
         ).strip()
 
+    # --- image description --------------------------------------------
+
+    def describe_image(self, image_bytes: bytes, prompt: str = "") -> str:
+        """Analyze an image and return a text description. Subclasses should override."""
+        raise NotImplementedError("Этот провайдер не поддерживает анализ изображений.")
+
+    def ocr_image(self, image_bytes: bytes) -> str:
+        """Extract text from image. Subclasses should override."""
+        return ""
+
+    def clean_ocr_text(self, raw_text: str) -> str:
+        """Refine messy OCR text into a coherent summary. Subclasses should override."""
+        return ""
+
     # --- summarize ----------------------------------------------------
 
     def summarize_messages(self, messages: list[dict]) -> str:
@@ -869,6 +883,116 @@ class YandexGPTClient(LLMClient):
             return data["result"]["alternatives"][0]["message"]["text"]
         except (KeyError, IndexError) as exc:
             raise RuntimeError(f"YandexGPT: неожиданный ответ: {data}") from exc
+
+    def describe_image(self, image_bytes: bytes, prompt: str = "") -> str:
+        """Analyze an image with YandexGPT Vision."""
+        import json as _json
+        import urllib.error
+        import urllib.request
+        import base64
+
+        # Use vision model
+        model_uri = f"gpt://{self.folder_id}/yandexgpt-vision/latest"
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        prompt_text = prompt or "Опиши кратко, что на этой картинке. Будь лаконичен, от 6 до 20 слов. Пиши по-русски."
+        
+        body = _json.dumps({
+            "modelUri": model_uri,
+            "completionOptions": {"stream": False, "temperature": 0.2, "maxTokens": "500"},
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt_text},
+                        {"type": "image", "image": image_b64}
+                    ]
+                }
+            ],
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            self._BASE_URL,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Api-Key {self.api_key}",
+                "x-folder-id": self.folder_id,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = _json.loads(resp.read().decode("utf-8"))
+            return data["result"]["alternatives"][0]["message"]["text"].strip()
+        except Exception:
+            return ""
+
+    def ocr_image(self, image_bytes: bytes) -> str:
+        """Extract text from image using Yandex Vision OCR."""
+        import json as _json
+        import urllib.request
+        import base64
+
+        url = "https://vision.api.cloud.yandex.net/vision/v1/batchAnalyze"
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        body = _json.dumps({
+            "folderId": self.folder_id,
+            "analyze_specs": [{
+                "content": image_b64,
+                "features": [{
+                    "type": "TEXT_DETECTION",
+                    "text_detection_config": {"language_codes": ["ru", "en"]}
+                }]
+            }]
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Api-Key {self.api_key}"
+            },
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = _json.loads(resp.read().decode("utf-8"))
+                # Extract all text lines
+                results = data.get("results", [])
+                if not results: return ""
+                
+                text_blocks = []
+                pages = results[0].get("results", [{}])[0].get("textDetection", {}).get("pages", [])
+                for page in pages:
+                    for block in page.get("blocks", []):
+                        for line in block.get("lines", []):
+                            line_text = " ".join([w.get("text", "") for w in line.get("words", [])])
+                            if line_text: text_blocks.append(line_text)
+                
+                return "\n".join(text_blocks).strip()
+        except Exception:
+            return ""
+
+    def clean_ocr_text(self, raw_text: str) -> str:
+        """Refine messy OCR text into a coherent summary using LLM."""
+        if not raw_text or len(raw_text) < 3:
+            return ""
+            
+        prompt = (
+            f"Ниже приведен сырой текст после распознавания картинки (OCR). "
+            f"Сделай его логичным и связным. Исправь ошибки, если они очевидны. "
+            f"Напиши результат ОДНОЙ строкой (до 10-12 слов). "
+            f"Если в тексте полная бессмыслица или нет смысла — не пиши ничего, верни пустую строку.\n\n"
+            f"Текст:\n{raw_text}"
+        )
+        try:
+            # Use standard completion for this
+            return self._complete([{"role": "user", "content": prompt}], max_tokens=100).strip()
+        except Exception:
+            return ""
 
     def _complete_with_tools(self, messages, tools, system="", max_tokens=2048):
         return self._prompt_based_tool_calling(messages, tools, system, max_tokens)

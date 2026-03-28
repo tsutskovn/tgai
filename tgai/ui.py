@@ -972,8 +972,16 @@ def format_messages(messages: list[Any], me_id: int, show_usernames: bool = Fals
     max_w = cols - 2
 
     for msg in reversed_msgs:
-        if not getattr(msg, "text", None):
+        # Check if message has text or photo
+        text = getattr(msg, "text", "") or ""
+        has_photo = hasattr(msg, "photo") and msg.photo
+        
+        if not text and not has_photo:
             continue
+            
+        if not text and has_photo:
+            text = "[media]"
+
         sender_id = getattr(msg, "sender_id", None)
         if sender_id == me_id:
             sender_label = "Вы"

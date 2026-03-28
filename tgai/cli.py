@@ -259,24 +259,40 @@ def _run_interactive(config: dict, storage, args) -> None:
         api_hash=tg_cfg["api_hash"],
         session_path=str(Path.home() / ".tgai" / "session"),
     )
+    
+    # Pre-create the client so it's available, but don't block
     claude = create_llm_client(config)
+
     async def menu_loop():
         listen_collector = None
         clear_on_exit = False
-        await tg.start()
+        
+        # --- START BACKGROUND INITIALIZATION ---
+        # We launch Telegram and LLM in background so the menu appears instantly
+        async def _init_bg():
+            nonlocal listen_collector, claude
+            try:
+                await tg.start()
+                # We don't block for warning anymore, just init LLM
+                if getattr(claude, "provider_name", "") == "yandexgpt":
+                    from tgai.commands.listen import ListenBackgroundCollector
+                    listen_collector = ListenBackgroundCollector(tg, claude, storage, persona)
+                    await listen_collector.start()
+            except Exception:
+                pass
+
+        init_task = asyncio.create_task(_init_bg())
+        # --- END BACKGROUND INITIALIZATION ---
+
         try:
-            await _maybe_show_yandex_warning(config, storage, text_mode)
-            claude = create_llm_client(config)
             persona_name = getattr(args, "persona", None) or defaults.get("persona", "default")
             persona = storage.load_persona(persona_name)
-            if getattr(claude, "provider_name", "") == "yandexgpt":
-                from tgai.commands.listen import ListenBackgroundCollector
-                listen_collector = ListenBackgroundCollector(tg, claude, storage, persona)
-                await listen_collector.start()
+            
             clear_on_exit = await _async_main_menu(
                 tg, claude, config, storage, persona, text_mode, defaults, listen_collector
             )
         finally:
+            init_task.cancel()
             if listen_collector is not None:
                 try:
                     await listen_collector.stop()

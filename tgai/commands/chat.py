@@ -547,12 +547,91 @@ async def _run_chat_fullscreen(
     _scroll = [0]  # lines scrolled up from bottom (0 = at bottom)
     _is_loading_initial = [not bool(all_loaded_msgs)]
 
+    async def _process_media_async(msg: Any):
+        """Analyze media in background using Vision + OCR and update message text."""
+        if not hasattr(msg, "photo") or not msg.photo:
+            return
+        
+        try:
+            # Download image bytes
+            img_bytes = await tg.download_media(msg)
+            if not img_bytes:
+                return
+            
+            loop = asyncio.get_running_loop()
+            
+            # Get description and OCR in parallel
+            description, raw_ocr = await asyncio.gather(
+                loop.run_in_executor(None, lambda: claude.describe_image(img_bytes)),
+                loop.run_in_executor(None, lambda: claude.ocr_image(img_bytes))
+            )
+            
+            # Refine OCR text via LLM
+            clean_ocr = ""
+            if raw_ocr:
+                clean_ocr = await loop.run_in_executor(
+                    None, lambda: claude.clean_ocr_text(raw_ocr)
+                )
+            
+            # Build result text
+            parts = []
+            if description:
+                parts.append(f"[media]: {description}")
+            else:
+                parts.append("[media]") 
+                
+            if clean_ocr:
+                parts.append(f"[текст]: {clean_ocr}")
+            
+            new_media_line = " | ".join(parts)
+            
+            # Update message text
+            original = getattr(msg, "text", "") or ""
+            if original == "[media]":
+                new_text = new_media_line
+            else:
+                # If there was a caption, keep it
+                new_text = f"{new_media_line}\n{original}" if original else new_media_line
+            
+            setattr(msg, "text", new_text)
+            setattr(msg, "message", new_text)
+            _rebuild_lines()
+            _invalidate()
+        except Exception:
+            pass
+
     async def _initial_load_messages():
         nonlocal all_loaded_msgs, _lines
         if not all_loaded_msgs:
             try:
                 msgs = await tg.get_messages(entity, limit=100)
                 all_loaded_msgs.extend(msgs)
+                
+                # --- OPTIMIZED MEDIA PROCESSING ---
+                from datetime import datetime, timedelta, timezone
+                now = datetime.now(timezone.utc)
+                day_ago = now - timedelta(days=1)
+                
+                processed_count = 0
+                # Process only top 10 messages (newest ones)
+                for m in msgs[:10]:
+                    has_photo = hasattr(m, "photo") and m.photo
+                    if not has_photo:
+                        continue
+                    
+                    # Set placeholder immediately
+                    if not getattr(m, "text", ""):
+                        setattr(m, "text", "[media]")
+                    
+                    # Conditions for AI analysis:
+                    # 1. Message is newer than 24 hours
+                    # 2. We haven't reached the limit (3 images per open)
+                    msg_date = getattr(m, "date", None)
+                    if msg_date and msg_date.replace(tzinfo=timezone.utc) > day_ago:
+                        if processed_count < 3:
+                            asyncio.create_task(_process_media_async(m))
+                            processed_count += 1
+
                 _rebuild_lines()
                 _is_loading_initial[0] = False
                 _invalidate()
@@ -994,10 +1073,18 @@ async def _run_chat_fullscreen(
                 break
             try:
                 msgs = await tg.get_messages(entity, limit=10)
-                new_msgs = [m for m in msgs if m.id > _last_id[0] and getattr(m, "text", None)]
+                new_msgs = [m for m in msgs if m.id > _last_id[0] and (getattr(m, "text", None) or getattr(m, "photo", None))]
                 if new_msgs:
                     _last_id[0] = max(m.id for m in new_msgs)
                     all_loaded_msgs[:0] = new_msgs
+                    
+                    # Trigger media processing for new photos (no strict limit for live messages)
+                    for m in new_msgs:
+                        if hasattr(m, "photo") and m.photo:
+                            if not getattr(m, "text", ""):
+                                setattr(m, "text", "[media]")
+                            asyncio.create_task(_process_media_async(m))
+
                     cols = shutil.get_terminal_size((80, 24)).columns - 2
                     new_lines = []
                     last_header = None

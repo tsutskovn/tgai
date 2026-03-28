@@ -423,6 +423,10 @@ class TelegramManager:
         """Send a text message to entity (username, phone, peer, etc.)."""
         return await self.client.send_message(entity, text)
 
+    async def download_media(self, message: Message) -> bytes:
+        """Download media from a message and return as bytes."""
+        return await self.client.download_media(message, file=bytes)
+
     # ------------------------------------------------------------------
     # Search
     # ------------------------------------------------------------------
