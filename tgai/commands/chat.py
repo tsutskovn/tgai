@@ -52,13 +52,22 @@ from tgai.chat_view import (
 
 async def _poll_chat_list(tg, dialogs_holder: list, app_holder: list) -> None:
     """Background task: refresh dialog list every 2s and trigger re-render."""
+    last_ids_sum = 0
     while True:
         try:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(2.0)  # Increased from 0.5 to 2.0 to reduce load
         except asyncio.CancelledError:
             break
         try:
-            new_dialogs = await tg.get_dialogs(limit=100)
+            # Fetching dialogs can be expensive. We fetch 50 instead of 100 to speed up.
+            new_dialogs = await tg.get_dialogs(limit=50)
+            
+            # Simple check if anything changed before invalidating
+            current_ids_sum = sum(d.id + getattr(d, 'unread_count', 0) for d in new_dialogs)
+            if current_ids_sum == last_ids_sum:
+                continue
+            
+            last_ids_sum = current_ids_sum
             dialogs_holder[0] = new_dialogs
             app = app_holder[0] if app_holder else None
             if app is not None:
@@ -165,9 +174,9 @@ async def _run_chat(
     history = storage.load_history(chat_id)
     claude.set_history(chat_id, history)
 
-    # Load messages
-    all_loaded_msgs = await tg.get_messages(entity, limit=100)
-    last_local_message = [all_loaded_msgs[0] if all_loaded_msgs else None]
+    # --- REMOVED BLOCKING MESSAGE FETCH ---
+    all_loaded_msgs = []
+    last_local_message = [None]
 
     from tgai.telegram import is_broadcast_channel
     is_channel = is_broadcast_channel(entity)
@@ -529,9 +538,34 @@ async def _run_chat_fullscreen(
     loop = asyncio.get_running_loop()
     _app_holder = [None]
 
-    # --- Message lines ---
-    _lines: list[str] = format_messages(list(all_loaded_msgs), me.id) if all_loaded_msgs else []
+    # --- ASYNC MESSAGE LOADING START ---
+    # We start with empty lines and load messages in background
+    _lines: list[str] = []
+    if all_loaded_msgs:
+        _lines = format_messages(list(all_loaded_msgs), me.id)
+    
     _scroll = [0]  # lines scrolled up from bottom (0 = at bottom)
+    _is_loading_initial = [not bool(all_loaded_msgs)]
+
+    async def _initial_load_messages():
+        nonlocal all_loaded_msgs, _lines
+        if not all_loaded_msgs:
+            try:
+                msgs = await tg.get_messages(entity, limit=100)
+                all_loaded_msgs.extend(msgs)
+                _rebuild_lines()
+                _is_loading_initial[0] = False
+                _invalidate()
+                
+                # Update last_id for poller
+                if all_loaded_msgs:
+                    _last_id[0] = all_loaded_msgs[0].id
+            except Exception:
+                _is_loading_initial[0] = False
+                _invalidate()
+    
+    asyncio.create_task(_initial_load_messages())
+    # --- ASYNC MESSAGE LOADING END ---
 
     def _max_scroll():
         _, terminal_lines = shutil.get_terminal_size((80, 24))
@@ -626,6 +660,11 @@ async def _run_chat_fullscreen(
     def _all_msg_content():
         _, terminal_lines = shutil.get_terminal_size((80, 24))
         visible = _chat_visible_lines(terminal_lines)
+        
+        # If still loading initial messages and no messages are present
+        if not _lines and _is_loading_initial[0]:
+            return FormattedText([('italic ansigray', '\n  [Загрузка истории...]')])
+
         padded_lines = _lines + ([""] * CHAT_BOTTOM_GAP)
         start = _chat_window_start(len(_lines), _scroll[0], terminal_lines)
         visible_lines = padded_lines[start:start + visible]
@@ -777,68 +816,91 @@ async def _run_chat_fullscreen(
         if input_buf.cursor_position < len(input_buf.text):
             input_buf.cursor_right()
 
+    @kb.add("c-r")
+    def _(e):
+        if not ai_available:
+            return
+        if is_channel:
+            return
+        if input_buf.text.strip() and not _ai_state["showing"]:
+            return
+        _rephrase_ai_suggestion()
+
     @kb.add("tab", eager=True)
     def _(e):
         if not ai_available:
             return
+        
         if _ai_state["showing"]:
             _ai_state["showing"] = False
             input_buf.text = _ai_state["user_text"]
             input_buf.cursor_position = len(input_buf.text)
-        elif _ai_suggestion[0] and not input_buf.text.strip():
+            _invalidate()
+            return
+
+        # If suggestion exists and field is empty - just insert it
+        if _ai_suggestion[0] and not input_buf.text.strip():
             _ai_state["user_text"] = ""
             _ai_state["showing"] = True
             input_buf.text = _ai_suggestion[0]
             input_buf.cursor_position = len(input_buf.text)
-        elif input_buf.text.strip():
-            # Initiate mode: improve draft
-            current = input_buf.text
-            _ai_state["user_text"] = current
-            input_buf.text = "..."
-            result = [current]
-            src = list(all_loaded_msgs[:claude.max_history])
-            chat_hist = []
-            for m in reversed(src):
-                if not getattr(m, "text", None):
-                    continue
-                sid = getattr(m, "sender_id", None)
-                label = "Вы" if sid == me.id else "Собеседник"
-                chat_hist.append({"sender": label, "text": m.text})
-            hist_snap = list(chat_hist)
+            _invalidate()
+            return
 
-            def _improve():
-                try:
-                    result[0] = claude.draft_reply(current, hist_snap, persona)
-                except Exception:
-                    pass
-            t = threading.Thread(target=_improve, daemon=True)
-            t.start()
-            t.join(timeout=15)
-            _ai_state["showing"] = True
-            input_buf.text = result[0]
-            input_buf.cursor_position = len(result[0])
+        # Otherwise, improve existing text or generate new one
+        current = input_buf.text
+        _ai_state["user_text"] = current
+        
+        # Start async loading indicator
+        input_buf.text = "Думаю..."
         _invalidate()
 
-    @kb.add("п")
-    @kb.add("f")
-    def _(e):
-        if not ai_available:
-            input_buf.insert_text(e.data)
-            return
-        if is_channel:
-            input_buf.insert_text(e.data)
-            return
-        if input_buf.text.strip() and not _ai_state["showing"]:
-            input_buf.insert_text(e.data)
-            return
-        _rephrase_ai_suggestion()
+        def _worker():
+            try:
+                if not current.strip():
+                    # Generate from scratch if empty
+                    src = list(all_loaded_msgs[:claude.max_history])
+                    chat_hist = []
+                    for m in reversed(src):
+                        if not getattr(m, "text", None): continue
+                        sid = getattr(m, "sender_id", None)
+                        label = "Вы" if sid == me.id else "Собеседник"
+                        chat_hist.append({"sender": label, "text": m.text})
+                    
+                    incoming = next((m.text for m in src if getattr(m, "sender_id", None) != me.id and m.text), None)
+                    res = claude.propose_reply(incoming, chat_hist, persona) if incoming else ""
+                else:
+                    # Improve existing
+                    src = list(all_loaded_msgs[:claude.max_history])
+                    chat_hist = []
+                    for m in reversed(src):
+                        if not getattr(m, "text", None): continue
+                        sid = getattr(m, "sender_id", None)
+                        label = "Вы" if sid == me.id else "Собеседник"
+                        chat_hist.append({"sender": label, "text": m.text})
+                    res = claude.draft_reply(current, chat_hist, persona)
+                
+                def _done():
+                    _ai_state["showing"] = True
+                    input_buf.text = res
+                    input_buf.cursor_position = len(res)
+                    _invalidate()
+                
+                loop.call_soon_threadsafe(_done)
+            except Exception:
+                def _fail():
+                    input_buf.text = current
+                    _invalidate()
+                loop.call_soon_threadsafe(_fail)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     @kb.add("enter")
     def _(e):
         if is_channel:
             return
         text = input_buf.text.strip()
-        if not text:
+        if not text or text == "Думаю...":
             return
 
         # Quick replies
@@ -879,13 +941,13 @@ async def _run_chat_fullscreen(
     @kb.add("<any>")
     def _(e):
         ch = e.data
-        if len(ch) == 1 and (ch.isprintable() or ch == " "):
+        if len(ch) == 1 and (ch.isprintable() or ch == " ") and input_buf.text != "Думаю...":
             input_buf.insert_text(ch)
 
     # --- Layout: HSplit keeps input pinned at bottom, cursor-pos scrolls messages ---
     def _hint_text():
         hint = (
-            "↑↓ прокрутка  Tab ИИ  п перефраз  Enter отправить  ← назад"
+            "↑↓ прокрутка  Tab ИИ  Ctrl+R перефраз  Enter отправить  ← назад"
             if (not is_channel and ai_available) else
             "↑↓ прокрутка  ← назад"
         )
@@ -1010,23 +1072,46 @@ def run(args: Any, config: dict, storage: Any) -> None:
                 entity = await _load_entity(tg, identifier)
                 if entity is None:
                     return
+                await _run_chat(tg, claude, storage, entity, persona, text_mode)
             else:
-                dialogs = await tg.get_dialogs(limit=100)
-                folders = await tg.get_folders()
-                if text_mode:
-                    dialog = select_chat_text(dialogs)
-                else:
-                    loop = asyncio.get_running_loop()
-                    dialogs_holder: list = [dialogs]
-                    app_holder: list = []
+                # --- LAZY LOADING START ---
+                dialogs_holder: list = [[]]
+                folders_holder: list = [[]]
+                app_holder: list = []
+                
+                async def _initial_fetch():
+                    try:
+                        # Fetch initial set fast
+                        d = await tg.get_dialogs(limit=50)
+                        dialogs_holder[0] = d
+                        
+                        # Invalidate UI if picker is open
+                        app = app_holder[0] if app_holder else None
+                        if app: app.invalidate()
+                        
+                        # Fetch the rest
+                        f = await tg.get_folders()
+                        folders_holder[0] = f
+                        if app: app.invalidate()
+                    except Exception:
+                        pass
+                
+                fetch_task = asyncio.create_task(_initial_fetch())
+                # --- LAZY LOADING END ---
+
+                while True:
+                    # Poller for continuous updates (already exists but now it's primary)
                     _poll_task = asyncio.create_task(
                         _poll_chat_list(tg, dialogs_holder, app_holder)
                     )
+                    
                     try:
+                        loop = asyncio.get_running_loop()
+                        # Pass holders instead of static lists
                         dialog = await loop.run_in_executor(
                             None,
                             lambda: select_chat_interactive(
-                                dialogs, folders,
+                                dialogs_holder[0], folders_holder[0],
                                 dialogs_holder=dialogs_holder,
                                 app_holder=app_holder,
                             ),
@@ -1037,13 +1122,15 @@ def run(args: Any, config: dict, storage: Any) -> None:
                             await _poll_task
                         except asyncio.CancelledError:
                             pass
-                if dialog is None:
-                    return
-                entity = dialog.entity
-
-            await _run_chat(tg, claude, storage, entity, persona, text_mode)
+                    
+                    if dialog is None:
+                        break
+                    
+                    entity = dialog.entity
+                    await _run_chat(tg, claude, storage, entity, persona, text_mode)
         finally:
             await tg.stop()
+
 
     try:
         asyncio.run(main())

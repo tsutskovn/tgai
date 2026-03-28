@@ -382,12 +382,12 @@ async def _menu_chat(tg, claude, storage, persona, text_mode, listen_collector=N
     from tgai.ui import select_chat_interactive, select_chat_text, clear, _pager
 
     clear()
-    try:
-        dialogs = await tg.get_dialogs(limit=100)
-        folders = await tg.get_folders()
-    except Exception as e:
-        print(f"Ошибка загрузки чатов: {e}")
-        return
+    
+    # --- OPTIMIZATION: REMOVED BLOCKING FETCH ---
+    # We no longer wait for dialogs/folders here. 
+    # The chat command will handle lazy loading.
+    dialogs = []
+    folders = []
 
     me = await tg.get_me()
     loop = asyncio.get_running_loop()
@@ -834,47 +834,15 @@ async def _open_last_sections(tg, claude, storage, sections: list, text_mode: bo
                 pass
 
     _should_refresh = True
-    _needs_blocking_refresh = True
+    _initial_launch = True
     while _should_refresh:
         _should_refresh = False
         app_holder: list = []
-        if not summarize_enabled:
-            if _needs_blocking_refresh:
-                await _quick_refresh_sections()
-                _needs_blocking_refresh = False
-            chosen = await _run_viewer_once(app_holder)
-            if chosen is None or chosen == _DIGEST_REFRESH:
-                break
-            name = chosen.get("name", "")
-            entity = chosen.get("entity") or _entity_cache.get(name)
-            if entity is None:
-                try:
-                    from tgai.telegram import _dialog_display_name
-                    dialogs = await tg.get_dialogs(limit=200)
-                    for d in dialogs:
-                        _entity_cache[_dialog_display_name(d)] = d.entity
-                    entity = _entity_cache.get(name)
-                except Exception:
-                    pass
-            if entity:
-                print(f"Открываю {name}...")
-                from tgai.commands.chat import _run_chat
-                persona_text = storage.load_persona("default")
-                if listen_collector is not None:
-                    listen_collector.pause()
-                try:
-                    await _run_chat(tg, claude, storage, entity, persona_text, text_mode)
-                finally:
-                    if listen_collector is not None:
-                        listen_collector.resume()
-                _should_refresh = True
-                _needs_blocking_refresh = False
-            continue
-        if _needs_blocking_refresh:
-            await _quick_refresh_sections()
-            _needs_blocking_refresh = False
+        
+        # Start background tasks
         _quick_task = asyncio.create_task(_quick_refresh_sections())
         _catchup_task = asyncio.create_task(_resolve_and_catchup(app_holder))
+        
         _watermarks = storage.load_watermarks()
         _last_cfg = storage.load_last_digest_settings() or {}
         _poll_task = asyncio.create_task(
@@ -887,7 +855,9 @@ async def _open_last_sections(tg, claude, storage, sections: list, text_mode: bo
                 scope=_last_cfg.get("scope", "all"),
             )
         )
+
         try:
+            # First launch is now instant, no blocking await
             chosen = await _run_viewer_once(app_holder)
         finally:
             for t in (_poll_task, _catchup_task, _quick_task):

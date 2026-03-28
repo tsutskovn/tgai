@@ -436,25 +436,47 @@ async def _run_aggregate(
             dialogs = await tg.get_dialogs_fresh(limit=200)
             candidates = []
             for dialog in dialogs:
+                name = _dialog_display_name(dialog)
                 entity = dialog.entity
                 broadcast = is_broadcast_channel(entity)
+                
                 if scope == "chats" and broadcast:
                     continue
                 if scope == "channels" and not broadcast:
                     continue
+                
                 is_personal = isinstance(entity, User) and not entity.bot
                 is_group = isinstance(entity, (Chat, Channel)) and not broadcast
+                
                 if is_personal or (is_group and dialog.id in whitelist_set) or broadcast:
-                    last_date = getattr(dialog.message, 'date', None)
+                    last_msg = getattr(dialog, 'message', None)
+                    if not last_msg:
+                        continue
+                    
+                    last_date = getattr(last_msg, 'date', None)
                     if last_date:
                         if last_date.tzinfo is None:
                             last_date = last_date.replace(tzinfo=timezone.utc)
                         if last_date < cutoff:
                             continue
+                    
+                    # --- CACHE CHECK ---
+                    # If we have a cached summary and the last message ID matches the watermark, skip
+                    if name in summary_cache:
+                        current_max_id = getattr(last_msg, 'id', 0)
+                        if current_max_id <= watermarks.get(name, 0):
+                            # Use cached version
+                            cached = summary_cache[name]
+                            if broadcast:
+                                cached_channel_summaries[name] = cached["summary"]
+                            else:
+                                cached_chat_summaries[name] = cached["summary"]
+                            continue
+                    
                     candidates.append((dialog, broadcast))
 
-            print(f"Кандидатов: {len(candidates)}. Проверяю новые сообщения...")
-            print(f"Из кэша: 0, загружу с API: {len(candidates)}")
+            print(f"Кандидатов: {len(candidates) + len(cached_chat_summaries) + len(cached_channel_summaries)}. Проверяю новые сообщения...")
+            print(f"Из кэша: {len(cached_chat_summaries) + len(cached_channel_summaries)}, загружу с API: {len(candidates)}")
 
             for i, (dialog, broadcast) in enumerate(candidates, 1):
                 name = _dialog_display_name(dialog)

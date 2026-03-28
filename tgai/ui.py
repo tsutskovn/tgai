@@ -273,12 +273,12 @@ ACTION_CHOICES = [
 ACTION_SHORTCUTS = {
     "о": ACTION_SEND,
     "р": ACTION_EDIT,
-    "п": ACTION_REFORMULATE,
+    "c-r": ACTION_REFORMULATE,
     "н": ACTION_MANUAL,
     "с": ACTION_SKIP,
     "o": ACTION_SEND,
     "e": ACTION_EDIT,
-    "f": ACTION_REFORMULATE,
+    "r": ACTION_REFORMULATE,
     "m": ACTION_MANUAL,
     "k": ACTION_SKIP,
 }
@@ -395,6 +395,12 @@ def chat_list_viewer(
 
         filtered = _filtered()
         n = len(filtered)
+        
+        # --- LOADING INDICATOR ---
+        if not _source() and not q:
+            parts.append(('italic ansigray', '  [Загрузка чатов...]\n'))
+            return FormattedText(parts)
+
         if n:
             state['idx'] = state['idx'] % n
 
@@ -527,15 +533,12 @@ def select_chat_interactive(
     from telethon.tl.types import User, Chat, Channel
     from tgai.telegram import is_broadcast_channel, _dialog_display_name
 
-    # Always exclude bots and broadcast channels
+    # Always exclude bots
     def _base(src: list[Any]) -> list[Any]:
         return [
             d for d in src
             if not (isinstance(d.entity, User) and d.entity.bot)
-            and not is_broadcast_channel(d.entity)
         ]
-
-    base = _base(dialogs)
 
     def _sort_by_date(lst: list[Any]) -> list[Any]:
         return _sort_dialogs(lst)
@@ -545,7 +548,9 @@ def select_chat_interactive(
         if mode == "personal":
             pool = [d for d in b if isinstance(d.entity, User)]
         elif mode == "groups":
-            pool = [d for d in b if isinstance(d.entity, (Chat, Channel))]
+            pool = [d for d in b if isinstance(d.entity, (Chat, Channel)) and not is_broadcast_channel(d.entity)]
+        elif mode == "channels":
+            pool = [d for d in b if is_broadcast_channel(d.entity)]
         else:
             pool = b
         if sub_mode == "unread":
@@ -558,12 +563,17 @@ def select_chat_interactive(
 
     # Category picker (no real-time needed here)
     while True:
+        # Determine actual sources
+        actual_dialogs = dialogs_holder[0] if dialogs_holder else dialogs
+        actual_folders = folders # folders is folders_holder[0] from chat.py
+        
         cat_choices = [
             _C("Все чаты", "all"),
             _C("Личные чаты", "personal"),
             _C("Группы", "groups"),
+            _C("Каналы", "channels"),
         ]
-        if folders:
+        if actual_folders:
             cat_choices.append(_C("Папки", "folders"))
 
         result = smart_select(cat_choices, title="Чат — выберите категорию:")
@@ -574,7 +584,7 @@ def select_chat_interactive(
         if sel_mode == 'text':
             # Quick text search from category screen
             q = cat.lower()
-            matches = [d for d in base if q in _dialog_display_name(d).lower()]
+            matches = [d for d in _base(actual_dialogs) if q in _dialog_display_name(d).lower()]
             if matches:
                 return chat_list_viewer(
                     matches, title=f'Поиск: {cat}',
@@ -584,14 +594,14 @@ def select_chat_interactive(
             continue
 
         if cat == "folders":
-            folder_choices = [_C(_folder_name(f), f) for f in folders]
+            folder_choices = [_C(_folder_name(f), f) for f in actual_folders]
             fr = smart_select(folder_choices, title="Выберите папку:")
             if fr is None:
                 continue
             fmode, selected_folder = fr
             if fmode == 'text':
                 q = selected_folder.lower()
-                matches = [d for d in base if q in _dialog_display_name(d).lower()]
+                matches = [d for d in _base(actual_dialogs) if q in _dialog_display_name(d).lower()]
                 if matches:
                     return chat_list_viewer(
                         matches, title=f'Поиск: {selected_folder}',
@@ -609,26 +619,22 @@ def select_chat_interactive(
                        or getattr(peer, 'channel_id', None))
                 if pid:
                     folder_peer_ids.add(pid)
-            folder_dialogs = [
-                d for d in base
-                if getattr(d.entity, 'id', None) in folder_peer_ids
-            ]
-            if not folder_dialogs:
-                print("Папка пуста или не удалось загрузить диалоги.")
-                continue
-
-            # Folder-scoped dialogs_holder
-            def _folder_holder():
-                src = dialogs_holder[0] if dialogs_holder else dialogs
+            
+            def _folder_holder_gen():
+                src = dialogs_holder[0] if dialogs_holder else actual_dialogs
                 return [d for d in _base(src)
                         if getattr(d.entity, 'id', None) in folder_peer_ids]
 
-            folder_dh = [folder_dialogs]
-            # We keep folder_dh in sync manually via app invalidation
+            folder_dialogs = _folder_holder_gen()
+            
+            class _FolderHolder:
+                def __getitem__(self, idx): return _folder_holder_gen()
+                def __bool__(self): return True
+
             return chat_list_viewer(
                 folder_dialogs,
                 title=f'Папка: {_folder_name(selected_folder)}',
-                dialogs_holder=folder_dh,
+                dialogs_holder=_FolderHolder(),
                 app_holder=app_holder,
                 preview_fn=preview_fn,
             )
@@ -646,7 +652,7 @@ def select_chat_interactive(
             smode, sub = sub_result
             if smode == 'text':
                 q = sub.lower()
-                matches = [d for d in base if q in _dialog_display_name(d).lower()]
+                matches = [d for d in _base(actual_dialogs) if q in _dialog_display_name(d).lower()]
                 if matches:
                     return chat_list_viewer(
                         matches, title=f'Поиск: {sub}',
@@ -657,16 +663,10 @@ def select_chat_interactive(
 
             # Build filtered dialogs_holder for this category+sub
             def _make_filtered_holder(m=cat, s=sub):
-                src = dialogs_holder[0] if dialogs_holder else dialogs
+                src = dialogs_holder[0] if dialogs_holder else actual_dialogs
                 return _filter_dialogs(src, m, s)
 
-            initial = _filter_dialogs(dialogs, cat, sub)
-            if not initial:
-                print("Нет чатов в этой категории.")
-                continue
-
-            # Wrap dialogs_holder to apply the same filter on updates
-            filtered_dh: list = [initial]
+            initial = _make_filtered_holder()
 
             class _FilteredHolder:
                 """List-like proxy that re-filters on each read."""
@@ -687,9 +687,9 @@ def select_chat_interactive(
                 )
                 if chosen is None:
                     break  # Back to category picker
+                
                 if open_fn is not None:
                     open_fn(chosen)  # Blocking: opens chat, returns when done
-                    # Loop back to same chat list
                 else:
                     return chosen
 
@@ -766,7 +766,7 @@ def action_menu_interactive(proposed: str, provider_name: str = "ИИ") -> tuple
             ('', ' отправить  '),
             ('bold ansicyan', '[р]'),
             ('', ' ред.  '),
-            ('bold ansicyan', '[п]'),
+            ('bold ansicyan', '[Ctrl+R]'),
             ('', ' перефразир.  '),
             ('bold ansicyan', '[н]'),
             ('', ' написать  '),
@@ -831,7 +831,7 @@ def action_menu_interactive(proposed: str, provider_name: str = "ИИ") -> tuple
 def action_menu_text(proposed: str, provider_name: str = "ИИ") -> tuple[str, Optional[str]]:
     """Text-mode action menu. Enter sends, other keys for actions."""
     print(f"\n{provider_name}: «{proposed}»")
-    print("  Enter отправить  [р]ед.  [п]ерефраз.  [н]аписать  [с]кип")
+    print("  Enter отправить  [р]ед.  [Ctrl+R]ефразиров.  [н]аписать  [с]кип")
     while True:
         try:
             key = input("Действие: ").strip().lower()

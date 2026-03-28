@@ -103,6 +103,16 @@ async def _build_pending_item(tg, claude, persona: str, me, event) -> dict | Non
         return None
 
     chat_entity = await event.get_chat()
+    
+    # --- CHECK IF ALREADY REPLIED ---
+    # Fetch the very last message in this chat. If it's from us, skip.
+    try:
+        last_msgs = await tg.get_messages(chat_entity, limit=1)
+        if last_msgs and last_msgs[0].sender_id == me.id:
+            return None
+    except Exception:
+        pass
+
     from tgai.telegram import _entity_display_name, is_broadcast_channel
     from telethon.tl.types import User
     if is_broadcast_channel(chat_entity):
