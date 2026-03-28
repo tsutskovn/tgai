@@ -301,6 +301,7 @@ class Storage:
             self.history_dir,
             self.digests_dir,
             self.base_dir / "summary_cache.json",
+            self.base_dir / "media_cache.json",
             self.base_dir / "digest_watermark.json",
             self.base_dir / "last_digest.json",
             self.base_dir / "last_sections.json",

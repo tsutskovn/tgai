@@ -267,13 +267,37 @@ def _run_interactive(config: dict, storage, args) -> None:
         listen_collector = None
         clear_on_exit = False
         
-        # --- START BACKGROUND INITIALIZATION ---
-        # We launch Telegram and LLM in background so the menu appears instantly
+        # --- AUTH CHECK ---
+        # If not authorized, we must log in synchronously BEFORE starting the menu
+        # otherwise Telethon's input() will conflict with prompt_toolkit.
+        if not await tg.is_authorized():
+            print("\n--- Авторизация в Telegram ---")
+            print("Примечание: номер телефона нужно вводить в международном формате, например +79991234567")
+            while True:
+                try:
+                    await tg.start()
+                    break # Success
+                except Exception as e:
+                    err_msg = str(e)
+                    if "phone number is invalid" in err_msg.lower():
+                        print("\nОшибка: Неверный формат номера телефона. Используйте международный формат (начиная с +).")
+                    elif "provided token is not valid" in err_msg.lower():
+                        print("\nОшибка: Неверный токен или номер.")
+                    else:
+                        print(f"\nОшибка при входе: {e}")
+                    
+                    retry = input("Попробовать еще раз? [Y/n]: ").lower()
+                    if retry == 'n':
+                        return False
+                    print()
+        
+        # Now that we are sure we are logged in, we can background the rest
         async def _init_bg():
             nonlocal listen_collector, claude
             try:
-                await tg.start()
-                # We don't block for warning anymore, just init LLM
+                if not tg.client.is_connected():
+                    await tg.start()
+                
                 if getattr(claude, "provider_name", "") == "yandexgpt":
                     from tgai.commands.listen import ListenBackgroundCollector
                     listen_collector = ListenBackgroundCollector(tg, claude, storage, persona)

@@ -263,6 +263,12 @@ class TelegramManager:
             self._me = await self.client.get_me()
         return self._me
 
+    async def is_authorized(self) -> bool:
+        """Check if the client is already authorized with Telegram."""
+        if not self.client.is_connected():
+            await self.client.connect()
+        return await self.client.is_user_authorized()
+
     # ------------------------------------------------------------------
     # Dialogs / Folders
     # ------------------------------------------------------------------
