@@ -546,12 +546,35 @@ async def _run_chat_fullscreen(
     
     _scroll = [0]  # lines scrolled up from bottom (0 = at bottom)
     _is_loading_initial = [not bool(all_loaded_msgs)]
+    
+    # Load media cache
+    _media_cache = storage.load_media_cache()
 
     async def _process_media_async(msg: Any):
         """Analyze media in background using Vision + OCR and update message text."""
         if not hasattr(msg, "photo") or not msg.photo:
             return
         
+        # Unique identifier for this photo
+        media_id = str(getattr(msg.photo, "id", ""))
+        if not media_id:
+            return
+
+        # Check local cache first
+        if media_id in _media_cache:
+            cached_res = _media_cache[media_id]
+            original = getattr(msg, "text", "") or ""
+            if original == "[media]":
+                new_text = cached_res
+            else:
+                new_text = f"{cached_res}\n{original}" if original else cached_res
+            
+            setattr(msg, "text", new_text)
+            setattr(msg, "message", new_text)
+            _rebuild_lines()
+            _invalidate()
+            return
+
         try:
             # Download image bytes
             img_bytes = await tg.download_media(msg)
@@ -584,6 +607,10 @@ async def _run_chat_fullscreen(
                 parts.append(f"[текст]: {clean_ocr}")
             
             new_media_line = " | ".join(parts)
+            
+            # Save to cache
+            _media_cache[media_id] = new_media_line
+            storage.save_media_cache(_media_cache)
             
             # Update message text
             original = getattr(msg, "text", "") or ""

@@ -270,6 +270,23 @@ class Storage:
         self._write_json(self._listen_pending_path, pending)
 
     # ------------------------------------------------------------------
+    # Media analysis cache — {media_id: analysis_text}
+    # ------------------------------------------------------------------
+
+    @property
+    def _media_cache_path(self) -> Path:
+        return self.base_dir / "media_cache.json"
+
+    def load_media_cache(self) -> dict[str, str]:
+        """Load {media_id: description} mapping."""
+        data = self._read_json(self._media_cache_path, {})
+        return data if isinstance(data, dict) else {}
+
+    def save_media_cache(self, cache: dict[str, str]) -> None:
+        """Save media descriptions."""
+        self._write_json(self._media_cache_path, cache)
+
+    # ------------------------------------------------------------------
     # Privacy cleanup
     # ------------------------------------------------------------------
 
